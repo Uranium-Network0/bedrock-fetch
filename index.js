@@ -1,4 +1,109 @@
+const express = require('express');
+const WebSocket = require('ws');
+
+const app = express();
+const PORT = process.env.PORT || 3000;
+
+const PANEL_URL = process.env.PEBBLE_PANEL_URL; 
+const API_KEY = process.env.PEBBLE_API_KEY;     
+const SERVER_ID = process.env.SERVER_ID;         
+const WORKER_URL = process.env.WORKER_URL;       
+const SECRET_TOKEN = process.env.SECRET_TOKEN;   
+
+app.get('/', (req, res) => {
+    res.send('PebbleHost Kill Streamer is active!');
+});
+
+app.listen(PORT, () => {
+    console.log(`Server listening on port ${PORT}`);
+    connectToPebbleConsole();
+});
+
+async function connectToPebbleConsole() {
+    try {
+        const response = await fetch(`${PANEL_URL}/api/client/servers/${SERVER_ID}/websocket`, {
+            headers: {
+                "Authorization": `Bearer ${API_KEY}`,
+                "Accept": "application/json"
+            }
+        });
+        
+        const result = await response.json();
+        
+        const wsUrl = result.data.socket; 
+        const token = result.data.token;
+
+        const ws = new WebSocket(wsUrl, {
+            headers: { "Origin": PANEL_URL }
+        });
+
+        ws.on('open', () => {
+            console.log('Connected to PebbleHost console stream!');
+            ws.send(JSON.stringify({ event: 'auth', args: [token] }));
+        });
+
+        ws.on('message', (data) => {
+            try {
+                const message = JSON.parse(data);
+                if (message.event === 'console output') {
+                    parseLogLine(message.args[0]);
+                }
+            } catch (err) {
+                // Ignore non-json frames
+            }
+        });
+
+        ws.on('close', () => {
+            console.log('Console connection closed. Reconnecting in 5 seconds...');
+            setTimeout(connectToPebbleConsole, 5000);
+        });
+
+        ws.on('error', (err) => {
+            console.error('WebSocket error:', err.message);
+            ws.close();
+        });
+
+    } catch (error) {
+        console.error('Failed to authorize console stream:', error.message);
+        setTimeout(connectToPebbleConsole, 10000);
+    }
+}
+
 function parseLogLine(line) {
+    // Print everything to log so we can see Bedrock chat/deaths
+    console.log("CONSOLE: " + line);
+
+    if (line.includes("slain") || line.includes("shot") || line.includes("died") || line.includes("by")) {
+        console.log(`Potential death captured: ${line}`);
+        
+        const parts = line.trim().split(" ");
+        const victim = parts[0];
+        let killer = "Environment";
+        let weapon = "Unknown";
+
+        if (line.includes("slain by") || line.includes("shot by")) {
+            killer = parts[parts.length - 1];
+            weapon = line.includes("shot by") ? "Projectile" : "Melee";
+        }
+
+        sendKillToWorker({ killer, victim, weapon });
+    }
+}
+
+async function sendKillToWorker(killData) {
+    try {
+        await fetch(WORKER_URL, {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json",
+                "Authorization": `Bearer ${SECRET_TOKEN}`
+            },
+            body: JSON.stringify(killData)
+        });
+    } catch (err) {
+        console.error("Failed to forward kill to Cloudflare Worker:", err.message);
+    }
+}function parseLogLine(line) {
     // TEMPORARY: Print every single console line so we can see how Bedrock formats deaths
     console.log("CON: " + line);
 
