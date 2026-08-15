@@ -22,14 +22,18 @@ app.listen(PORT, () => {
 
 async function pollServerLog() {
     try {
-        const response = await fetch(`${PANEL_URL}/api/client/servers/${SERVER_ID}/files/logs/latest.log`, {
+        // Updated path to target logs/latest.log accurately
+        const response = await fetch(`${PANEL_URL}/api/client/servers/${SERVER_ID}/files/contents?file=logs%2Flatest.log`, {
             headers: {
                 "Authorization": `Bearer ${API_KEY}`,
                 "Accept": "application/json"
             }
         });
 
-        if (!response.ok) return;
+        if (!response.ok) {
+            console.error(`Failed to fetch log file: ${response.status} ${response.statusText}`);
+            return;
+        }
 
         const logText = await response.text();
         const lines = logText.split('\n');
@@ -45,13 +49,14 @@ async function pollServerLog() {
             }
         }
     } catch (err) {
-        // Silently retry on network blips
+        console.error("Polling error:", err.message);
     }
 }
 
 function parseLogLine(line) {
     console.log("LOG: " + line);
 
+    // Bedrock death line filters
     if (line.includes("slain") || line.includes("shot") || line.includes("died") || line.includes("by")) {
         console.log(`Death detected in logs: ${line}`);
         
