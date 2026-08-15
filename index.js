@@ -1,11 +1,33 @@
-const http = require('http');
+const express = require('express');
+const app = express();
 
-const server = http.createServer((req, res) => {
-  res.writeHead(200, { 'Content-Type': 'text/plain' });
-  res.end('Hello from Render!');
+// Middleware to parse incoming JSON data from your server
+app.use(express.json());
+
+// In-memory array to store recent kills (use a real database like MongoDB/PostgreSQL for production)
+let killFeed = [];
+
+// 1. Endpoint for your Minecraft server to POST kills to
+app.post('/api/kill', (req, res) => {
+  const { killer, victim } = req.body;
+  
+  if (!killer || !victim) {
+    return res.status(400).json({ error: 'Missing killer or victim' });
+  }
+
+  const killEvent = { killer, victim, timestamp: new Date() };
+  killFeed.unshift(killEvent); // Add to the top of the list
+
+  console.log(`[KILL] ${killer} killed ${victim}`);
+  res.status(200).json({ success: true, message: 'Kill recorded!' });
 });
 
-const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => {
+// 2. Endpoint for your website frontend to fetch the kill leaderboard/feed
+app.get('/api/kills', (req, res) => {
+  res.json(killFeed);
+});
+
+const PORT = process.env.PORT || 10000;
+app.listen(PORT, () => {
   console.log(`Server is running on port ${PORT}`);
 });
