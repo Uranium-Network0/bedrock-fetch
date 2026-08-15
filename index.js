@@ -1,7 +1,8 @@
 const express = require('express');
-const app = express();
+const cors = require('cors'); // Add this
 
-// Middleware to parse incoming JSON data from your server
+const app = express();
+app.use(cors()); // Add this (allows any website to read your API)
 app.use(express.json());
 
 // In-memory array to store recent kills (use a real database like MongoDB/PostgreSQL for production)
