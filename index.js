@@ -34,14 +34,19 @@ app.get('/api/kills', (req, res) => {
 });
 
 // 2. The Log Scraper
+// 2. The Log Scraper (DEBUG MODE)
 async function fetchPebbleHostLogs() {
   if (!API_KEY || !SERVER_ID) {
     console.log("[WARNING] Missing PebbleHost API keys in Render environment variables.");
     return;
   }
 
+  // NOTE: If your log file is named something else, change 'logs/latest.log' below!
+  const filePath = 'logs/latest.log'; 
+  const url = `${PANEL_URL}/api/client/servers/${SERVER_ID}/files/contents?file=${encodeURIComponent(filePath)}`;
+
   try {
-    const response = await fetch(`${PANEL_URL}/api/client/servers/${SERVER_ID}/files/contents?file=logs/latest.log`, {
+    const response = await fetch(url, {
       headers: {
         'Authorization': `Bearer ${API_KEY}`,
         'Accept': 'text/plain'
@@ -49,17 +54,23 @@ async function fetchPebbleHostLogs() {
     });
 
     if (!response.ok) {
-      console.log(`[API Error] Failed to read log: ${response.statusText}`);
+      console.log(`[API Error] PebbleHost rejected our request.`);
+      console.log(`Status: ${response.status} ${response.statusText}`);
+      const errBody = await response.text();
+      console.log(`Response Body: ${errBody}`);
       return;
     }
 
     const text = await response.text();
-    
-    // Only parse new text since the last check
     const newText = text.slice(lastLogSize);
+    
+    console.log(`[POLL] Success! Log Size: ${text.length} chars | New Data: ${newText.length} chars`);
+    
     lastLogSize = text.length; 
 
     if (newText.length > 0) {
+      // Print the new text so we can see the exact format Bedrock is spitting out
+      console.log(`[NEW LOG DATA]:\n${newText.trim()}`);
       parseKills(newText);
     }
   } catch (err) {
