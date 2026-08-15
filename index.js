@@ -4,11 +4,11 @@ const WebSocket = require('ws');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-const PANEL_URL = process.env.PEBBLE_PANEL_URL; // e.g., https://panel.pebblehost.com
-const API_KEY = process.env.PEBBLE_API_KEY;     // Client API Key from PebbleHost
-const SERVER_ID = process.env.SERVER_ID;         // Short server ID from your panel URL
-const WORKER_URL = process.env.WORKER_URL;       // Your Cloudflare Worker endpoint
-const SECRET_TOKEN = process.env.SECRET_TOKEN;   // Your shared security token
+const PANEL_URL = process.env.PEBBLE_PANEL_URL; 
+const API_KEY = process.env.PEBBLE_API_KEY;     
+const SERVER_ID = process.env.SERVER_ID;         
+const WORKER_URL = process.env.WORKER_URL;       
+const SECRET_TOKEN = process.env.SECRET_TOKEN;   
 
 app.get('/', (req, res) => {
     res.send('PebbleHost Kill Streamer is active!');
@@ -21,7 +21,6 @@ app.listen(PORT, () => {
 
 async function connectToPebbleConsole() {
     try {
-        // Fetch WebSocket authorization details from PebbleHost panel API
         const response = await fetch(`${PANEL_URL}/api/client/servers/${SERVER_ID}/websocket`, {
             headers: {
                 "Authorization": `Bearer ${API_KEY}`,
@@ -29,9 +28,11 @@ async function connectToPebbleConsole() {
             }
         });
         
-        const data = await response.json();
-        const wsUrl = data.data.url;
-        const token = data.data.token;
+        const result = await response.json();
+        
+        // Fixed property mapping for Pterodactyl/PebbleHost API response layout
+        const wsUrl = result.data.socket; 
+        const token = result.data.token;
 
         const ws = new WebSocket(wsUrl, {
             headers: { "Origin": PANEL_URL }
@@ -59,18 +60,17 @@ async function connectToPebbleConsole() {
         });
 
         ws.on('error', (err) => {
-            console.error('WebSocket error:', err);
+            console.error('WebSocket error:', err.message);
             ws.close();
         });
 
     } catch (error) {
-        console.error('Failed to authorize console stream:', error);
+        console.error('Failed to authorize console stream:', error.message);
         setTimeout(connectToPebbleConsole, 10000);
     }
 }
 
 function parseLogLine(line) {
-    // Look for Bedrock death patterns in console output
     if (line.includes("was slain by") || line.includes("was shot by") || line.includes("died")) {
         console.log(`Death log captured: ${line}`);
         
@@ -99,6 +99,6 @@ async function sendKillToWorker(killData) {
             body: JSON.stringify(killData)
         });
     } catch (err) {
-        console.error("Failed to forward kill to Cloudflare Worker:", err);
+        console.error("Failed to forward kill to Cloudflare Worker:", err.message);
     }
 }
