@@ -22,7 +22,7 @@ app.listen(PORT, () => {
 
 async function pollServerLog() {
     try {
-        const response = await fetch(`${PANEL_URL}/api/client/servers/${SERVER_ID}/files/contents?file=server.log`, {
+        const response = await fetch(`${PANEL_URL}/api/client/servers/${SERVER_ID}/files/logs/latest.log`, {
             headers: {
                 "Authorization": `Bearer ${API_KEY}`,
                 "Accept": "application/json"
