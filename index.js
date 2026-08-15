@@ -83,7 +83,6 @@ function parseKills(logText) {
   const lines = logText.split('\n');
   
   // Regex to catch standard Minecraft death messages
-  // Example: "[INFO] Player1 was slain by Player2"
   const killRegex = /(.+?) (was slain by|was shot by|was killed by|was pummeled by|was burned to death by) (.+)/;
 
   lines.forEach(line => {
@@ -93,16 +92,17 @@ function parseKills(logText) {
       const rawVictim = match[1].trim();
       const victim = rawVictim.split(' ').pop(); // Grabs just the player name
       const killer = match[3].trim();
-      const weapon = match[2]; // e.g., "was slain by"
+      // We removed 'weapon = match[2]' so it won't store or display the filler text
 
       console.log(`[SCRAPED KILL] ${killer} killed ${victim}`);
       
       killFeed.unshift({ 
         killer: killer, 
         victim: victim, 
-        weapon: weapon,
         timestamp: new Date() 
       });
+
+      if (killFeed.length > 50) killFeed.pop();
     }
   });
 }
