@@ -78,20 +78,31 @@ async function fetchPebbleHostLogs() {
   }
 }
 
+// 3. The Death Message Parser
 function parseKills(logText) {
   const lines = logText.split('\n');
   
-  // New regex looking for our custom Bedrock script output
-  const killRegex = /\[KILL_LOG\] (.*?) was killed by (.*)/;
+  // Regex to catch standard Minecraft death messages
+  // Example: "[INFO] Player1 was slain by Player2"
+  const killRegex = /(.+?) (was slain by|was shot by|was killed by|was pummeled by|was burned to death by) (.+)/;
 
   lines.forEach(line => {
     const match = line.match(killRegex);
     if (match) {
-      const victim = match[1].trim();
-      const killer = match[2].trim();
+      // Clean up the victim string to remove the "[INFO]" or timestamp prefix
+      const rawVictim = match[1].trim();
+      const victim = rawVictim.split(' ').pop(); // Grabs just the player name
+      const killer = match[3].trim();
+      const weapon = match[2]; // e.g., "was slain by"
+
+      console.log(`[SCRAPED KILL] ${killer} killed ${victim}`);
       
-      console.log(`🗡️ KILL DETECTED: ${killer} killed ${victim}`);
-      sendToCloudflare(killer, victim);
+      killFeed.unshift({ 
+        killer: killer, 
+        victim: victim, 
+        weapon: weapon,
+        timestamp: new Date() 
+      });
     }
   });
 }
