@@ -161,7 +161,20 @@ function parseKills(logText) {
   const joinRegex = /Player connected: (.+?), xuid: \d+/;
   const leaveRegex = /Player disconnected: (.+?), xuid: \d+/;
 
+  // Regex to catch the custom console line written by the ChatLogBP pack, e.g.:
+  // [Scripting] [CHAT_LOG] Steve: hello everyone
+  const chatRegex = /\[CHAT_LOG\] (.+?): (.+)/;
+
   lines.forEach(line => {
+    const chatMatch = line.match(chatRegex);
+    if (chatMatch) {
+      const player = chatMatch[1].trim();
+      const message = chatMatch[2].trim();
+      console.log(`[SCRAPED CHAT] ${player}: ${message}`);
+      sendToDiscord(`💬 **${sanitizeForDiscord(player)}**: ${sanitizeForDiscord(message)}`);
+      return;
+    }
+
     const joinMatch = line.match(joinRegex);
     if (joinMatch) {
       const player = joinMatch[1].trim();
