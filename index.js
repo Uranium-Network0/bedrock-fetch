@@ -1,5 +1,6 @@
 const express = require('express');
 const cors = require('cors');
+const { Client, GatewayIntentBits } = require('discord.js');
 
 const app = express();
 app.use(cors());
@@ -17,6 +18,14 @@ const PANEL_URL = process.env.PANEL_URL || 'https://panel.pebblehost.com';
 // Discord webhook URL - set this in Render's environment variables
 // (Discord channel -> Edit Channel -> Integrations -> Webhooks -> New Webhook -> Copy URL)
 const DISCORD_WEBHOOK_URL = process.env.DISCORD_WEBHOOK_URL;
+
+// Discord BOT credentials - needed for the Discord -> Minecraft direction,
+// since webhooks are send-only and can't listen for messages.
+// DISCORD_BOT_TOKEN comes from the Discord Developer Portal.
+// DISCORD_CHANNEL_ID is the channel the bot listens in (right-click the
+// channel in Discord with Developer Mode on -> Copy Channel ID).
+const DISCORD_BOT_TOKEN = process.env.DISCORD_BOT_TOKEN;
+const DISCORD_CHANNEL_ID = process.env.DISCORD_CHANNEL_ID;
 
 // Escapes Discord markdown/mentions so player names/messages can't break formatting
 // or ping @everyone/@here/roles.
@@ -49,6 +58,84 @@ async function sendToDiscord(content) {
   } catch (err) {
     console.error('[Discord Fetch Error]', err.message);
   }
+}
+
+// Sends a console command to the Bedrock server via Pterodactyl's client API.
+// Returns silently (with a log line) on failure - most commonly because the
+// server is offline, which Pterodactyl reports as an HTTP 412.
+async function sendCommandToServer(command) {
+  if (!API_KEY || !SERVER_ID) {
+    console.log('[WARNING] Missing PebbleHost API keys, cannot send console command.');
+    return;
+  }
+
+  const url = `${PANEL_URL}/api/client/servers/${SERVER_ID}/command`;
+
+  try {
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${API_KEY}`,
+        'Content-Type': 'application/json',
+        'Accept': 'application/json'
+      },
+      body: JSON.stringify({ command })
+    });
+
+    if (!response.ok) {
+      const errBody = await response.text();
+      console.log(`[Command Error] ${response.status} ${response.statusText}: ${errBody}`);
+    }
+  } catch (err) {
+    console.error('[Command Fetch Error]', err.message);
+  }
+}
+
+// Strips characters that would otherwise break the Bedrock tellraw JSON or
+// abuse formatting codes, and caps message length.
+function sanitizeForMinecraft(text) {
+  return String(text)
+    .replace(/§/g, '')       // strip Minecraft formatting codes
+    .replace(/[\r\n]+/g, ' ') // collapse newlines
+    .slice(0, 200);
+}
+
+// Discord -> Minecraft bridge. Needs Message Content Intent enabled in the
+// Developer Portal, and the bot invited to your server with permission to
+// read/view the target channel.
+let discordBot = null;
+if (DISCORD_BOT_TOKEN && DISCORD_CHANNEL_ID) {
+  discordBot = new Client({
+    intents: [
+      GatewayIntentBits.Guilds,
+      GatewayIntentBits.GuildMessages,
+      GatewayIntentBits.MessageContent
+    ]
+  });
+
+  discordBot.once('ready', () => {
+    console.log(`[Discord Bot] Logged in as ${discordBot.user.tag}`);
+  });
+
+  discordBot.on('messageCreate', (message) => {
+    if (message.channelId !== DISCORD_CHANNEL_ID) return;
+    if (message.author.bot) return; // ignore our own webhook posts and other bots
+    if (!message.content) return; // ignore attachment/embed-only messages
+
+    const author = sanitizeForMinecraft(message.author.username);
+    const content = sanitizeForMinecraft(message.content);
+
+    console.log(`[DISCORD -> MC] ${author}: ${content}`);
+
+    const rawtext = { rawtext: [{ text: `§9[Discord] §b${author}: §f${content}` }] };
+    sendCommandToServer(`tellraw @a ${JSON.stringify(rawtext)}`);
+  });
+
+  discordBot.login(DISCORD_BOT_TOKEN).catch((err) => {
+    console.error('[Discord Bot] Failed to log in:', err.message);
+  });
+} else {
+  console.log('[WARNING] DISCORD_BOT_TOKEN or DISCORD_CHANNEL_ID not set, Discord -> Minecraft relay disabled.');
 }
 
 // 1. Existing Endpoints
