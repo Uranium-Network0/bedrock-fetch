@@ -152,12 +152,24 @@ if (DISCORD_BOT_TOKEN && DISCORD_CHANNEL_ID) {
     if (message.author.bot) return; // ignore our own webhook posts and other bots
     if (!message.content) return; // ignore attachment/embed-only messages
 
-    const author = sanitizeForMinecraft(message.author.username);
+    // displayName is the server nickname if set, falling back to their
+    // global display name - this is what actually shows in the Discord UI,
+    // unlike the raw account username.
+    const author = sanitizeForMinecraft(
+      message.member?.displayName || message.author.globalName || message.author.username
+    );
     const content = sanitizeForMinecraft(message.content);
 
     console.log(`[DISCORD -> MC] ${author}: ${content}`);
 
-    const rawtext = { rawtext: [{ text: `§9[Discord] §b${author}: §f${content}` }] };
+    const rawtext = {
+      rawtext: [
+        { text: '§9§l[Discord]§r ' },
+        { text: `§b${author}` },
+        { text: '§7: ' },
+        { text: `§f${content}` }
+      ]
+    };
     sendCommandToServer(`tellraw @a ${JSON.stringify(rawtext)}`);
   });
 
