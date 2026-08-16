@@ -8,6 +8,7 @@ app.use(express.json());
 
 let killFeed = [];
 let lastLogSize = 0; // Keeps track of where we left off in the log file
+let hasPolledOnce = false; // See fetchPebbleHostLogs - avoids replaying the whole log on restart
 
 // PebbleHost / Pterodactyl Panel Settings
 // We will set these in Render so your keys stay safe
@@ -36,28 +37,57 @@ function sanitizeForDiscord(text) {
     .replace(/([_*~`|>])/g, '\\$1');
 }
 
-// Sends a message to the configured Discord webhook. Safe to call even if
-// the webhook isn't configured yet - it'll just log a warning and skip.
-async function sendToDiscord(content) {
+// Sends a message to the configured Discord webhook. Queued and spaced out
+// (see below) so a burst of events (e.g. several kills in one poll) can't
+// trip Discord's rate limit by firing all at once.
+const discordQueue = [];
+let isProcessingDiscordQueue = false;
+
+function sendToDiscord(content) {
   if (!DISCORD_WEBHOOK_URL) {
     console.log('[WARNING] DISCORD_WEBHOOK_URL is not set, skipping Discord message.');
     return;
   }
+  discordQueue.push(content);
+  processDiscordQueue();
+}
 
-  try {
-    const response = await fetch(DISCORD_WEBHOOK_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ content })
-    });
+async function processDiscordQueue() {
+  if (isProcessingDiscordQueue) return;
+  isProcessingDiscordQueue = true;
 
-    if (!response.ok) {
-      const errBody = await response.text();
-      console.log(`[Discord Error] ${response.status} ${response.statusText}: ${errBody}`);
+  while (discordQueue.length > 0) {
+    const content = discordQueue.shift();
+
+    try {
+      const response = await fetch(DISCORD_WEBHOOK_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ content })
+      });
+
+      if (response.status === 429) {
+        const body = await response.json().catch(() => ({}));
+        const retryAfterMs = Math.ceil((body.retry_after || 1) * 1000);
+        console.log(`[Discord Rate Limited] Waiting ${retryAfterMs}ms before retrying.`);
+        discordQueue.unshift(content); // put it back at the front, retry it
+        await new Promise((r) => setTimeout(r, retryAfterMs));
+        continue;
+      }
+
+      if (!response.ok) {
+        const errBody = await response.text();
+        console.log(`[Discord Error] ${response.status} ${response.statusText}: ${errBody}`);
+      }
+    } catch (err) {
+      console.error('[Discord Fetch Error]', err.message);
     }
-  } catch (err) {
-    console.error('[Discord Fetch Error]', err.message);
+
+    // Space out sends so we stay well under Discord's per-webhook rate limit.
+    await new Promise((r) => setTimeout(r, 500));
   }
+
+  isProcessingDiscordQueue = false;
 }
 
 // Sends a console command to the Bedrock server via Pterodactyl's client API.
@@ -219,6 +249,26 @@ async function fetchPebbleHostLogs() {
     }
 
     const text = await response.text();
+
+    // On the very first poll after a (re)start, don't parse anything - just
+    // record the current file size. Otherwise every restart would replay the
+    // server's entire log history and flood Discord with duplicate messages.
+    if (!hasPolledOnce) {
+      hasPolledOnce = true;
+      lastLogSize = text.length;
+      console.log(`[STARTUP] Skipping replay of existing log (${text.length} chars). Only new lines from here on will be relayed.`);
+      return;
+    }
+
+    // If the log file is now smaller than our last recorded position, the
+    // Bedrock server itself was restarted and logs/latest.log got truncated.
+    // Treat everything currently in the file as new rather than getting
+    // stuck forever waiting for a position that no longer exists.
+    if (text.length < lastLogSize) {
+      console.log('[INFO] Log file appears to have been truncated (server restart?). Resetting position.');
+      lastLogSize = 0;
+    }
+
     const newText = text.slice(lastLogSize);
     
     console.log(`[POLL] Success! Log Size: ${text.length} chars | New Data: ${newText.length} chars`);
