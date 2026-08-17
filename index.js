@@ -20,6 +20,11 @@ const PANEL_URL = process.env.PANEL_URL || 'https://panel.pebblehost.com';
 // (Discord channel -> Edit Channel -> Integrations -> Webhooks -> New Webhook -> Copy URL)
 const DISCORD_WEBHOOK_URL = process.env.DISCORD_WEBHOOK_URL;
 
+// Second webhook, for a separate "logs" channel (e.g. inventory changes).
+// A single webhook can only ever post into the one channel it was created
+// for, so a second channel needs its own webhook URL.
+const DISCORD_LOGS_WEBHOOK_URL = process.env.WEBHOOK;
+
 // Discord BOT credentials - needed for the Discord -> Minecraft direction,
 // since webhooks are send-only and can't listen for messages.
 // DISCORD_BOT_TOKEN comes from the Discord Developer Portal.
@@ -37,30 +42,40 @@ function sanitizeForDiscord(text) {
     .replace(/([_*~`|>])/g, '\\$1');
 }
 
-// Sends a message to the configured Discord webhook. Queued and spaced out
-// (see below) so a burst of events (e.g. several kills in one poll) can't
-// trip Discord's rate limit by firing all at once.
-const discordQueue = [];
-let isProcessingDiscordQueue = false;
+// Sends a message to a Discord webhook. Queued and spaced out per-webhook
+// (see below) so a burst of events can't trip Discord's rate limit by firing
+// all at once. Each distinct webhook URL gets its own independent queue.
+const discordQueues = new Map(); // webhookUrl -> { queue: [], processing: bool }
 
-function sendToDiscord(content) {
-  if (!DISCORD_WEBHOOK_URL) {
-    console.log('[WARNING] DISCORD_WEBHOOK_URL is not set, skipping Discord message.');
+function sendToDiscord(content, webhookUrl = DISCORD_WEBHOOK_URL) {
+  if (!webhookUrl) {
+    console.log('[WARNING] No Discord webhook URL configured for this message, skipping.');
     return;
   }
-  discordQueue.push(content);
-  processDiscordQueue();
+  if (!discordQueues.has(webhookUrl)) {
+    discordQueues.set(webhookUrl, { queue: [], processing: false });
+  }
+  discordQueues.get(webhookUrl).queue.push(content);
+  processDiscordQueue(webhookUrl);
 }
 
-async function processDiscordQueue() {
-  if (isProcessingDiscordQueue) return;
-  isProcessingDiscordQueue = true;
+// Convenience wrapper for the separate logs channel (falls back to the main
+// webhook if a dedicated logs webhook isn't configured, so nothing silently
+// disappears if you haven't set one up yet).
+function sendToDiscordLogs(content) {
+  sendToDiscord(content, DISCORD_LOGS_WEBHOOK_URL || DISCORD_WEBHOOK_URL);
+}
 
-  while (discordQueue.length > 0) {
-    const content = discordQueue.shift();
+async function processDiscordQueue(webhookUrl) {
+  const state = discordQueues.get(webhookUrl);
+  if (!state || state.processing) return;
+  state.processing = true;
+
+  while (state.queue.length > 0) {
+    const content = state.queue.shift();
 
     try {
-      const response = await fetch(DISCORD_WEBHOOK_URL, {
+      const response = await fetch(webhookUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ content })
@@ -70,7 +85,7 @@ async function processDiscordQueue() {
         const body = await response.json().catch(() => ({}));
         const retryAfterMs = Math.ceil((body.retry_after || 1) * 1000);
         console.log(`[Discord Rate Limited] Waiting ${retryAfterMs}ms before retrying.`);
-        discordQueue.unshift(content); // put it back at the front, retry it
+        state.queue.unshift(content); // put it back at the front, retry it
         await new Promise((r) => setTimeout(r, retryAfterMs));
         continue;
       }
@@ -87,7 +102,7 @@ async function processDiscordQueue() {
     await new Promise((r) => setTimeout(r, 500));
   }
 
-  isProcessingDiscordQueue = false;
+  state.processing = false;
 }
 
 // Sends a console command to the Bedrock server via Pterodactyl's client API.
@@ -205,6 +220,19 @@ app.get('/api/kills', (req, res) => {
 // the reliable way to relay in-game chat (e.g. a script using the chatSend event).
 // /api/join and /api/leave are also scraped from the log below, but are provided
 // here too in case you'd rather have an addon report them directly.
+app.post('/api/inventory', (req, res) => {
+  const { player, gameMode, slot, before, after } = req.body;
+  if (!player) return res.status(400).json({ error: 'Missing player' });
+
+  console.log(`[POST INVENTORY] ${player} (${gameMode || 'unknown'}) slot ${slot}: ${before || 'empty'} -> ${after || 'empty'}`);
+
+  const beforeText = before ? `${before}` : '*empty*';
+  const afterText = after ? `${after}` : '*empty*';
+  sendToDiscordLogs(`🎒 **${sanitizeForDiscord(player)}**${gameMode ? ` (${sanitizeForDiscord(gameMode)})` : ''} slot ${slot}: ${sanitizeForDiscord(beforeText)} → ${sanitizeForDiscord(afterText)}`);
+
+  res.status(200).json({ success: true });
+});
+
 app.post('/api/join', (req, res) => {
   const { player } = req.body;
   if (!player) return res.status(400).json({ error: 'Missing player' });
@@ -314,7 +342,22 @@ function parseKills(logText) {
   // [Scripting] [CHAT_LOG] Steve: hello everyone
   const chatRegex = /\[CHAT_LOG\] (.+?): (.+)/;
 
+  // Regex to catch the custom console line written by the InventoryLogBP pack, e.g.:
+  // [Scripting] [INV_LOG] Steve | slot 4 | empty -> minecraft:diamond x1
+  const invRegex = /\[INV_LOG\] (.+?) \| slot (\d+) \| (.+?) -> (.+)/;
+
   lines.forEach(line => {
+    const invMatch = line.match(invRegex);
+    if (invMatch) {
+      const player = invMatch[1].trim();
+      const slot = invMatch[2].trim();
+      const before = invMatch[3].trim();
+      const after = invMatch[4].trim();
+      console.log(`[SCRAPED INVENTORY] ${player} slot ${slot}: ${before} -> ${after}`);
+      sendToDiscordLogs(`🎒 **${sanitizeForDiscord(player)}** (Creative) slot ${slot}: ${sanitizeForDiscord(before)} → ${sanitizeForDiscord(after)}`);
+      return;
+    }
+
     const chatMatch = line.match(chatRegex);
     if (chatMatch) {
       const player = chatMatch[1].trim();
